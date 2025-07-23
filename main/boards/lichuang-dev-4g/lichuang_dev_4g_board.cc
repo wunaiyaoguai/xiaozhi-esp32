@@ -8,6 +8,8 @@
 #include "esp32_camera.h"
 #include "assets/lang_config.h"
 #include "backlight.h"
+#include "touch_gesture_handler.h"
+#include "network_switch_popup.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -17,6 +19,7 @@
 #include <esp_lcd_touch_ft5x06.h>
 #include <esp_lvgl_port.h>
 #include <lvgl.h>
+#include <esp_timer.h>
 
 #define TAG "LichuangDev4GBoard"
 
@@ -76,6 +79,8 @@ private:
     LcdDisplay* display_;
     Pca9557* pca9557_;
     Esp32Camera* camera_;
+    TouchGestureHandler* touch_gesture_handler_;
+    NetworkSwitchPopup* network_switch_popup_;
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -250,17 +255,124 @@ private:
         camera_ = new Esp32Camera(config);
     }
 
+    void InitializeTouchGesture() {
+        ESP_LOGI(TAG, "InitializeTouchGesture() called");
+        
+        // 创建触摸手势处理器
+        ESP_LOGI(TAG, "Creating TouchGestureHandler...");
+        touch_gesture_handler_ = new TouchGestureHandler();
+        
+        // 创建网络切换弹窗
+        ESP_LOGI(TAG, "Creating NetworkSwitchPopup...");
+        network_switch_popup_ = new NetworkSwitchPopup();
+        
+        // 设置右上角检测区域（320x240屏幕，右上角50x50区域）
+        // 从触摸日志看，右上角坐标大约是 X:270-320, Y:70-120
+        ESP_LOGI(TAG, "Setting detection area...");
+        touch_gesture_handler_->SetDetectionArea(270, 70, 50, 50);
+        
+        // 设置长按回调函数
+        ESP_LOGI(TAG, "Setting long press callback...");
+        touch_gesture_handler_->SetLongPressCallback([this]() {
+            ESP_LOGI(TAG, "Long press callback triggered!");
+            this->OnRightTopCornerLongPress();
+        });
+        
+        // 设置弹窗确认回调函数
+        ESP_LOGI(TAG, "Setting popup confirm callback...");
+        network_switch_popup_->SetConfirmCallback([this]() {
+            ESP_LOGI(TAG, "Popup confirm callback triggered!");
+            this->OnNetworkSwitchConfirmed();
+        });
+        
+        // 初始化触摸手势处理器（仅创建定时器）
+        ESP_LOGI(TAG, "Initializing touch gesture handler...");
+        touch_gesture_handler_->Initialize();
+        
+        ESP_LOGI(TAG, "Touch gesture and network switch popup initialized successfully");
+    }
+    
+    void FinalizeTouchGestureSetup() {
+        // 在LVGL完全初始化后添加事件监听器
+        ESP_LOGI(TAG, "FinalizeTouchGestureSetup called");
+        if (touch_gesture_handler_) {
+            ESP_LOGI(TAG, "Adding touch event listeners...");
+            touch_gesture_handler_->AddEventListeners();
+        } else {
+            ESP_LOGE(TAG, "Touch gesture handler is null!");
+        }
+    }
+
+    void OnRightTopCornerLongPress() {
+        ESP_LOGI(TAG, "Right top corner long press detected");
+        
+        // 更新弹窗消息，显示当前网络类型和切换目标
+        UpdateNetworkSwitchMessage();
+        
+        // 显示网络切换弹窗
+        network_switch_popup_->Show();
+    }
+
+    void OnNetworkSwitchConfirmed() {
+        ESP_LOGI(TAG, "Network switch confirmed by user");
+        
+        // 调用网络切换功能
+        SwitchNetworkType();
+    }
+
+    void UpdateNetworkSwitchMessage() {
+        // 根据当前网络类型更新弹窗消息
+        const char* current_network;
+        const char* target_network;
+        
+        if (GetNetworkType() == NetworkType::WIFI) {
+            current_network = "WiFi";
+            target_network = "4G";
+        } else {
+            current_network = "4G";
+            target_network = "WiFi";
+        }
+        
+        network_switch_popup_->UpdateMessage(current_network, target_network);
+    }
+
 public:
     LichuangDev4GBoard() : DualNetworkBoard(ML307_TX_PIN, ML307_RX_PIN, GPIO_NUM_NC),
-                           boot_button_(BOOT_BUTTON_GPIO) {
+                           boot_button_(BOOT_BUTTON_GPIO),
+                           touch_gesture_handler_(nullptr),
+                           network_switch_popup_(nullptr) {
         InitializeI2c();
         InitializeSpi();
         InitializeSt7789Display();
         InitializeTouch();
         InitializeButtons();
         InitializeCamera();
+        ESP_LOGI(TAG, "About to initialize touch gesture...");
+        InitializeTouchGesture();
+        ESP_LOGI(TAG, "Touch gesture initialized");
 
         GetBacklight()->RestoreBrightness();
+        
+        // 在构造函数最后添加触摸事件监听器，此时LVGL应该已经初始化
+        ESP_LOGI(TAG, "About to finalize touch gesture setup...");
+        FinalizeTouchGestureSetup();
+        ESP_LOGI(TAG, "Touch gesture setup completed");
+        
+        // 添加一个简单的测试
+        ESP_LOGI(TAG, "LichuangDev4GBoard constructor completed successfully");
+        ESP_LOGI(TAG, "=== TOUCH GESTURE FEATURE LOADED ===");
+        ESP_LOGI(TAG, "Instructions: Long press right top corner (270-320, 0-50) for 1.5s to switch network");
+    }
+
+    virtual ~LichuangDev4GBoard() {
+        if (touch_gesture_handler_) {
+            delete touch_gesture_handler_;
+            touch_gesture_handler_ = nullptr;
+        }
+        if (network_switch_popup_) {
+            delete network_switch_popup_;
+            network_switch_popup_ = nullptr;
+        }
     }
 
     virtual AudioCodec* GetAudioCodec() override {
